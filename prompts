@@ -1,0 +1,6 @@
+Générer un projet nosm-catalog en java 25 maven springboot 3.5.0 avec une structure hexagonale et approche ddd  :
+
+Créer
+-les entités du domaine : avec tests unitaire 
+-les uses cases de l'application : avec test BDD cucumber
+- l'infrastructure  : avec spring jdbc/jdbcClient/Jooq (base sqlserver 2022), rest api, test end2end avec testcontainers avec sqlserver 2022 / schema catalog 
