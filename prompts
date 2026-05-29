@@ -65,3 +65,118 @@ Nous appliquons le pattern Anti-Corruption Layer (ACL). La logique métier pure 
 - Utilisez le niveau de langage de Java 25 (Records obligatoires pour les DTOs).
 - Évitez l'utilisation de frameworks de mapping complexes comme MapStruct pour ce besoin transitoire ; un mapping manuel et explicite dans le contrôleur (ou via des méthodes "factory" dans les records) est préférable pour être facilement supprimé le jour du decommissioning.
 - Fournis un code propre, modulaire et documenté.
+
+
+
+
+Agis en tant qu'Expert Java 25, Architecte Domain-Driven Design (DDD) et Spring Boot 3.4.
+Génère la structure de code complète (Domaine + Infrastructure) pour le microservice `osm-catalog` en respectant scrupuleusement les principes du DDD et une approche Clean Architecture.
+
+### Contexte Métier & Règles d'Invariants :
+- Un `Catalog` est une **Racine d'Agrégat (Aggregate Root)**. Il est immuable après sa création et ne porte que son identifiant et son `catalogType` (ex: ENUM ou String représentant la nature du catalogue).
+- Un `CatalogVersion` est une **Entité interne** à l'agrégat `Catalog`. Elle possède son propre cycle de vie (statuts: `DRAFT`, `PENDING`, `ACTIF`, `ARCHIVED`).
+- **Invariants à garantir par l'Agrégat :**
+  1. La création d'un `Catalog` instancie automatiquement sa première version (`v1`) avec le statut `DRAFT`.
+  2. On peut créer autant de drafts en parallèle que l'on veut à partir de la version qui a le statut `ACTIF`. Chaque draft reçoit un ID de version unique et étanche.
+  3. Lors de la validation d'un draft (passage à `ACTIF`), l'ancienne version actuellement `ACTIF` doit être automatiquement basculée à `ARCHIVED` par l'agrégat pour garantir qu'il n'y a qu'une seule version active à la fois.
+
+---
+
+### TÂCHE 1 : Le Modèle du Domaine (DDD Pure)
+
+Génère le code des classes du Domaine (sans anémie, avec une encapsulation forte, en utilisant les fonctionnalités modernes de Java 25 comme les Records pour les Value Objects et le Pattern Matching) :
+
+1. **`Catalog` (Aggregate Root) :**
+   - Propriétés : `CatalogId id` (Value Object), `CatalogType type` (Value Object/Enum), `List<CatalogVersion> versions`.
+   - Méthodes métiers :
+     - `public static Catalog create(CatalogId id, CatalogType type)`
+     - `public CatalogVersionId createDraftFromActive(CatalogVersionId activeVersionId, CatalogVersionId newVersionId)`
+     - `public void validateVersion(CatalogVersionId versionId)`
+
+2. **`CatalogVersion` (Internal Entity) :**
+   - Propriétés : `CatalogVersionId id`, `CatalogStatus status`, `List<Segment> segments`.
+   - Méthodes de mutation d'état (accessibles uniquement par l'agrégat / package-private).
+
+---
+
+### TÂCHE 2 : L'Infrastructure et Persistance (Spring Data JPA)
+
+1. **Le Repository Unique :**
+   - Crée l'interface `CatalogRepository` qui étend `Repository<Catalog, CatalogId>` (ou `JpaRepository`). Il ne doit y avoir **AUCUN** repository standalone pour `CatalogVersion`.
+   - Configure le mapping JPA/Hibernate sur l'agrégat pour que la sauvegarde du `Catalog` propage toutes les modifications des versions en cascade (`CascadeType.ALL`, `orphanRemoval = true`).
+
+2. **Séparation Lecture/Écriture (CQRS) :**
+   - Pour les modifications (Commands), on passe par l'Agrégat.
+   - Pour les lectures du Front-end (Queries, ex: récupérer l'arbre d'une version), propose une méthode optimisée (via une projection JPA ou un Record DTO) qui court-circuite l'agrégat complet et tape directement sur la table `catalog_version` pour un maximum de performance.
+
+---
+
+### TÂCHE 3 : Le Contrôleur Unique (`CatalogController`)
+
+Génère l'unique contrôleur REST moderne `/api/v1/catalogs`. Il centralise la gestion du catalogue et de ses sous-ressources (les versions). Il doit exposer exactement les endpoints suivants, parfaitement alignés avec notre stratégie de réécriture de la Gateway :
+
+- `POST /api/v1/catalogs` -> Crée le catalogue et sa v1 draft.
+- `POST /api/v1/catalogs/{catalogId}/versions?sourceVersionId=...` -> Crée un nouveau draft à partir d'une version active.
+- `GET /api/v1/catalogs/{catalogId}/versions` -> Liste toutes les versions et drafts du catalogue.
+- `GET /api/v1/catalogs/versions/{versionId}` -> Récupère le contenu/arbre d'une version spécifique (Mode Query optimisé).
+- `PUT /api/v1/catalogs/versions/{versionId}` -> La zone de travail : met à jour le draft (segments, entités, produits liés).
+- `POST /api/v1/catalogs/versions/{versionId}/submit` -> Soumet le draft (statut PENDING).
+- `POST /api/v1/catalogs/versions/{versionId}/validate` -> Valide le draft (devient ACTIF, l'ancien est ARCHIVED via l'agrégat).
+- `POST /api/v1/catalogs/versions/{versionId}/close` -> Clôture/archive une version.
+
+### Contraintes de rendu :
+- Fournis un code propre, modulaire et découplé (le domaine ne doit pas dépendre des couches Web).
+- Utilise les standards de Spring Boot 3.4 et Java 25.
+
+
+
+Agis en tant qu'Expert Java 25, Architecte Domain-Driven Design (DDD) et Spring Boot 3.4 / JPA.
+Génère la structure de code complète (Domaine, Infrastructure et Contrôleur) pour le microservice `osm-catalog` en respectant scrupuleusement les principes du DDD et la gestion des identifiants par séquences existante.
+
+### Spécificités Techniques d'Infrastructure (Clés & Séquences) :
+- `Catalog` et `CatalogVersion` possèdent chacun leur propre séquence de base de données distincte.
+- L'attribution des IDs doit se faire via notre composant/mécanisme existant : `SequenceIdGeneratorRepository` (ou via des annotations `@SequenceGenerator` dédiées et distinctes sur chaque entité si tu passes par l'infra JPA standard, mais isole la logique pour que je puisse y injecter notre `SequenceIdGeneratorRepository`).
+
+### Contexte Métier & Règles d'Invariants (DDD) :
+- `Catalog` est la **Racine d'Agrégat (Aggregate Root)**. Il est immuable après sa création et porte un `CatalogId` et un `CatalogType` (ex: ENUM ou String).
+- `CatalogVersion` est une **Entité interne** à l'agrégat, identifiée par son propre `CatalogVersionId` (généré par sa propre séquence). Elle porte le cycle de vie (statuts: `DRAFT`, `PENDING`, `ACTIF`, `ARCHIVED`).
+- **Invariants de l'Agrégat :**
+  1. La création d'un `Catalog` instancie automatiquement sa première version (`v1`) au statut `DRAFT`.
+  2. On peut créer $N$ drafts en parallèle à partir de la version actuellement `ACTIF`. Chaque draft obtient un ID unique issu de la séquence des versions.
+  3. Lors de la validation d'un draft (passage à `ACTIF`), l'ancienne version `ACTIF` passe automatiquement à `ARCHIVED`.
+
+---
+
+### TÂCHE 1 : Le Modèle du Domaine & Entités Rich (Java 25)
+
+1. **`Catalog` (Aggregate Root) :**
+   - Propriétés : `CatalogId id`, `CatalogType type`, `List<CatalogVersion> versions`.
+   - Modélise les méthodes métiers proprement encapsulées : `create()`, `createDraftFromActive()`, `validateVersion()`.
+2. **`CatalogVersion` (Internal Entity) :**
+   - Propriétés : `CatalogVersionId id` (clé dédiée), `CatalogStatus status`, `List<Segment> segments`.
+
+Ajoute les annotations JPA (`@Entity`, `@Table`, `@Id`) nécessaires sur ces classes. Pour les générateurs d'ID, prévois une configuration par séquence distincte pour le Catalogue et la Version, compatible avec notre utilisation de `SequenceIdGeneratorRepository`.
+
+---
+
+### TÂCHE 2 : L'Infrastructure et Séparation CQRS
+
+1. **`CatalogRepository` Unique :**
+   - Crée l'interface étendant `Repository<Catalog, CatalogId>`. Configure le mapping pour que la sauvegarde du `Catalog` propage les versions en cascade (`CascadeType.ALL`, `orphanRemoval = true`). Il ne doit y avoir aucun repository autonome pour `CatalogVersion`.
+2. **Optimisation des Lectures (CQRS) :**
+   - Comme l'UI va souvent appeler une version spécifique par son ID (`/api/v1/catalogs/versions/{versionId}`), propose une méthode de requête ou une projection JPA (ou un Record d'affichage) qui extrait directement les données de la table `catalog_version` par son ID sans charger tout l'historique de l'agrégat `Catalog` associé, afin de maximiser les performances de lecture.
+
+---
+
+### TÂCHE 3 : L'Unique `CatalogController`
+
+Génère le contrôleur REST unique `/api/v1/catalogs` mappant exactement les routes configurées dans notre Gateway :
+- `POST /api/v1/catalogs` -> Crée le catalogue (via sa séquence) et sa v1 draft (via sa séquence).
+- `POST /api/v1/catalogs/{catalogId}/versions?sourceVersionId=...` -> Duplique une version active en un nouveau draft (génère un nouvel ID de version).
+- `GET /api/v1/catalogs/versions/{versionId}` -> Récupère l'arbre d'une version spécifique (via la lecture optimisée CQRS).
+- `PUT /api/v1/catalogs/versions/{versionId}` -> Zone de travail : met à jour le contenu du draft.
+- `POST /api/v1/catalogs/versions/{versionId}/submit` -> Passe en `PENDING`.
+- `POST /api/v1/catalogs/versions/{versionId}/validate` -> Passe en `ACTIF` et archive l'ancienne (gestion par l'agrégat).
+
+### Contraintes :
+- Code propre, non-anémique, utilisant les fonctionnalités modernes de Java 25.
